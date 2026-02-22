@@ -29,7 +29,8 @@ module FlowDiagnostics
         pore_volume,
         model_or_domain_is_well,
         ReservoirSimResult,
-        darcy_phase_volume_fluxes
+        darcy_phase_volume_fluxes,
+        eachphase
 
     import Jutul:
         number_of_cells,
