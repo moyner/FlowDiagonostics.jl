@@ -242,7 +242,10 @@ if the well is not found or is disabled.
 function _get_well_control(forces, well_name::Symbol)
     isnothing(forces) && return nothing
     # Try unified Facility
-    if forces isa NamedTuple && haskey(forces, :Facility)
+    if forces isa Vector
+        forces = forces[end]
+    end
+    if haskey(forces, :Facility)
         fac = forces[:Facility]
         if fac isa NamedTuple && haskey(fac, :control)
             ctrl_dict = fac[:control]
@@ -254,7 +257,7 @@ function _get_well_control(forces, well_name::Symbol)
     end
     # Try individual well controller (split_wells = true)
     ctrl_key = Symbol("$(well_name)_ctrl")
-    if forces isa NamedTuple && haskey(forces, ctrl_key)
+    if haskey(forces, ctrl_key)
         fc = forces[ctrl_key]
         if fc isa NamedTuple && haskey(fc, :control)
             ctrl_dict = fc[:control]
