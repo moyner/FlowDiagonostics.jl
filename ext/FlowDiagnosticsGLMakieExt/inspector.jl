@@ -203,7 +203,7 @@ function _launch_inspector(result, model, forces;
         transparency = false
     )
 
-    Colorbar(fig[6, 1:3], scat, vertical = false, label = @lift($qty_obs))
+    Colorbar(fig[6, 1:3], scat, vertical = false, label = qty_obs)
 
     # ---- Reactive updates --------------------------------------------------
 
