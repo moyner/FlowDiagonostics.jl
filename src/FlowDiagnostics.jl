@@ -42,4 +42,23 @@ module FlowDiagnostics
 
     export FlowDiagnosticsSetup, FlowDiagnosticsResult
     export setup_flow_diagnostics, solve_flow_diagnostics
+
+    """
+        flow_diagnostics_inspector(result, model, forces; kwarg...)
+        flow_diagnostics_inspector(result, case::JutulCase; kwarg...)
+
+    Launch an interactive 3-D GLMakie inspector for flow diagnostics. Requires
+    GLMakie to be loaded (`using GLMakie`) before calling this function.
+
+    The GUI provides:
+    - A **step slider** to select the simulation step. Flow diagnostics are
+      recomputed for the chosen step.
+    - A **quantity menu** to display forward TOF, backward TOF, residence time,
+      or a tracer concentration.
+    - **TOF threshold sliders** to hide cells with forward or backward TOF above
+      the chosen cut-off.
+    """
+    function flow_diagnostics_inspector end
+
+    export flow_diagnostics_inspector
 end
