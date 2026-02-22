@@ -51,12 +51,14 @@ function FlowDiagnostics.flow_diagnostics_inspector(
         forces;
         resolution::Tuple{Int,Int} = (1600, 1000),
         z_is_depth::Union{Missing,Bool} = missing,
-        new_window::Bool = get(ENV, "CI", "false") == "false"
+        new_window::Bool = get(ENV, "CI", "false") == "false",
+        max_tof::Float64 = 20.0
     )
     _launch_inspector(result, model, forces;
         resolution  = resolution,
         z_is_depth  = z_is_depth,
-        new_window  = new_window
+        new_window  = new_window,
+        max_tof     = max_tof
     )
 end
 
@@ -75,7 +77,7 @@ end
 # -------------------------------------------------------------------------
 
 function _launch_inspector(result, model, forces;
-        resolution, z_is_depth, new_window)
+        resolution, z_is_depth, new_window, max_tof = 20.0)
 
     # ---- Mesh and geometry ------------------------------------------------
     rmodel  = JutulDarcy.reservoir_model(model)
@@ -157,7 +159,7 @@ function _launch_inspector(result, model, forces;
     # Row 3: TOF interval slider (years) – replaces two broken single sliders
     fwd_max_yr  = _finite_max(diag_init.forward_tof)  / _SECONDS_PER_YEAR
     bwd_max_yr  = _finite_max(diag_init.backward_tof) / _SECONDS_PER_YEAR
-    tof_hi_init = max(fwd_max_yr, bwd_max_yr, 1.0)
+    tof_hi_init = min(max(fwd_max_yr, bwd_max_yr, 1.0), max_tof)
     tof_range   = LinRange(0.0, tof_hi_init, 500)
 
     fig[3, 1:4] = tof_grid = GridLayout(tellwidth = false)
