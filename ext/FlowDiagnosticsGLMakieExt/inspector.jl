@@ -4,6 +4,9 @@
 #   flow_diagnostics_inspector(result, model, forces; kwarg...)
 #   flow_diagnostics_inspector(result, case::JutulCase; kwarg...)
 
+# Seconds in one Julian year (365.25 days)
+const _SECONDS_PER_YEAR = 365.25 * 86400.0
+
 # -------------------------------------------------------------------------
 # Public entry points
 # -------------------------------------------------------------------------
@@ -16,17 +19,18 @@ Open an interactive GLMakie window for inspecting flow diagnostics.
 
 # User interface
 - **Step slider** – selects the simulation step. Flow diagnostics are
-  recomputed whenever the step changes.
+  recomputed whenever the step changes. Time is shown in years.
 - **Quantity menu** – choose what to display:
-  - `Forward TOF` – time of flight from injectors (seconds).
-  - `Backward TOF` – time of flight to producers (seconds).
-  - `Residence time` – sum of forward and backward TOF.
-  - Injector/producer tracer concentrations (one entry per well / source).
-- **Forward TOF threshold** and **Backward TOF threshold** sliders – cells
-  with a TOF value *above* the chosen threshold are hidden from the plot.
-  Moving a slider to its maximum value disables that filter.
-- The colorbar is updated automatically when the displayed quantity or step
-  changes.
+  - `Forward TOF (years)` / `Backward TOF (years)` / `Residence time (years)`.
+  - Per-injector and per-producer tracer concentrations.
+  - Dynamic state variables (Pressure, Saturations, …) for the current step.
+  - Static domain properties (Permeability, Porosity, …).
+- **Colormap menu** – select from a list of common Makie colormaps.
+- **TOF range slider** (`IntervalSlider`) – show only cells whose forward TOF
+  falls within the selected [lo, hi] interval (in years). Cells with
+  non-finite (unreachable) forward or backward TOF are always hidden.
+- **Well markers** – injector cells are marked in red, producer cells in blue.
+- The colorbar label and range update automatically.
 
 # Arguments
 - `result::ReservoirSimResult` – output of `simulate_reservoir`.
@@ -35,8 +39,7 @@ Open an interactive GLMakie window for inspecting flow diagnostics.
 - `case::JutulCase` – alternative to passing `model` and `forces` separately.
 
 # Keyword arguments
-- `resolution` – window size in pixels, default `(1400, 900)`.
-- `colormap` – Makie colormap symbol, default `:viridis`.
+- `resolution` – window size in pixels, default `(1600, 1000)`.
 - `z_is_depth::Bool` – if `true` the z-axis is inverted (depth convention).
   Inferred automatically from the mesh when not provided.
 - `new_window::Bool` – if `true` (default outside CI) the figure is displayed
@@ -46,16 +49,14 @@ function FlowDiagnostics.flow_diagnostics_inspector(
         result::JutulDarcy.ReservoirSimResult,
         model,
         forces;
-        resolution::Tuple{Int,Int} = (1400, 900),
-        colormap = :viridis,
+        resolution::Tuple{Int,Int} = (1600, 1000),
         z_is_depth::Union{Missing,Bool} = missing,
         new_window::Bool = get(ENV, "CI", "false") == "false"
     )
     _launch_inspector(result, model, forces;
-        resolution = resolution,
-        colormap = colormap,
-        z_is_depth = z_is_depth,
-        new_window = new_window
+        resolution  = resolution,
+        z_is_depth  = z_is_depth,
+        new_window  = new_window
     )
 end
 
@@ -65,9 +66,8 @@ function FlowDiagnostics.flow_diagnostics_inspector(
         case::JutulCase;
         kwarg...
     )
-    # Pass case.forces directly so that _compute_diag can pick the right per-step
-    # forces when forces is a vector.
-    return FlowDiagnostics.flow_diagnostics_inspector(result, case.model, case.forces; kwarg...)
+    return FlowDiagnostics.flow_diagnostics_inspector(
+        result, case.model, case.forces; kwarg...)
 end
 
 # -------------------------------------------------------------------------
@@ -75,7 +75,7 @@ end
 # -------------------------------------------------------------------------
 
 function _launch_inspector(result, model, forces;
-        resolution, colormap, z_is_depth, new_window)
+        resolution, z_is_depth, new_window)
 
     # ---- Mesh and geometry ------------------------------------------------
     rmodel  = JutulDarcy.reservoir_model(model)
@@ -88,91 +88,118 @@ function _launch_inspector(result, model, forces;
         z_is_depth = Jutul.mesh_z_is_depth(mesh)
     end
 
-    # Triangulate once – this is the expensive geometry step
+    # Triangulate once – the expensive geometry step
     pts_raw, tri_raw, mapper = triangulate_mesh(mesh)
-    pts_c   = Makie.to_vertices(pts_raw)
-    tri_c   = Makie.to_triangles(tri_raw)
+    pts_c = Makie.to_vertices(pts_raw)
+    tri_c = Makie.to_triangles(tri_raw)
+
+    # Cell centroids for well markers
+    geo            = Jutul.tpfv_geometry(mesh)
+    cell_centroids = geo.cell_centroids   # D × nc
 
     # ---- Initial diagnostics (last step) ----------------------------------
-    step_init = nsteps
-    diag_init = _compute_diag(result, model, forces, step_init)
+    step_init  = nsteps
+    setup_init = _fd_build_setup(result, model, forces, step_init)
+    diag_init  = solve_flow_diagnostics(setup_init; compute_tracers = true)
+
+    # ---- Static and initial dynamic quantities ----------------------------
+    static_qty = _fd_static_quantities(domain, nc)
+    dyn_init   = _fd_dynamic_quantities(
+        _fd_reservoir_state(result.states[step_init]), nc)
 
     # ---- Build quantity list ----------------------------------------------
-    # Fixed quantities always present
-    base_quantities = ["Forward TOF", "Backward TOF", "Residence time"]
-    # Per-injector tracers
     inj_keys  = sort(collect(keys(diag_init.injector_tracers)),  by = string)
     prod_keys = sort(collect(keys(diag_init.producer_tracers)), by = string)
+
+    diag_labels = ["Forward TOF (years)", "Backward TOF (years)",
+                   "Residence time (years)"]
     inj_labels  = ["Inj tracer: $k"  for k in inj_keys]
     prod_labels = ["Prod tracer: $k" for k in prod_keys]
-    all_quantities = vcat(base_quantities, inj_labels, prod_labels)
+    dyn_labels  = sort(collect(keys(dyn_init)))
+    stat_labels = ["Static: $k" for k in sort(collect(keys(static_qty)))]
+    all_quantities = vcat(diag_labels, inj_labels, prod_labels,
+                          dyn_labels, stat_labels)
 
     # ---- Observables -------------------------------------------------------
-    step_obs    = Observable{Int}(step_init)
-    qty_obs     = Observable{String}(base_quantities[1])
-    diag_obs    = Observable{FlowDiagnosticsResult}(diag_init)
-    fwd_thresh  = Observable{Float64}(1.0)   # fraction 0–1 of max finite fwd TOF
-    bwd_thresh  = Observable{Float64}(1.0)   # fraction 0–1 of max finite bwd TOF
+    diag_obs = Observable{FlowDiagnosticsResult}(diag_init)
+    dyn_obs  = Observable{Dict{String,Vector{Float64}}}(dyn_init)
+    qty_obs  = Observable{String}(diag_labels[1])
+    cmap_obs = Observable{Symbol}(:viridis)
 
     # ---- Figure layout ----------------------------------------------------
     fig = Figure(size = resolution)
 
-    # Top controls row
-    fig[1, 1:3] = ctrl_grid = GridLayout(tellwidth = false)
-
-    # Step slider (row 2)
-    fig[2, 1:3] = step_grid = GridLayout(tellwidth = false)
-    step_grid[1, 1] = Label(fig, "Step:", font = :bold, tellwidth = false)
-    sl_step = Slider(step_grid[1, 2], range = 1:nsteps, value = step_obs, snap = true)
-    step_grid[1, 3] = Label(fig, @lift("$($step_obs) / $nsteps"), tellwidth = false)
-
-    # Forward TOF threshold slider (row 3)
-    fig[3, 1:3] = fwd_grid = GridLayout(tellwidth = false)
-    fwd_grid[1, 1] = Label(fig, "Fwd TOF threshold:", font = :bold, tellwidth = false)
-    sl_fwd = Slider(fwd_grid[1, 2], range = LinRange(0.0, 1.0, 500), value = fwd_thresh, snap = false)
-    fwd_grid[1, 3] = Label(fig, @lift(string(round($fwd_thresh * 100; digits=1)) * "%"), tellwidth = false)
-
-    # Backward TOF threshold slider (row 4)
-    fig[4, 1:3] = bwd_grid = GridLayout(tellwidth = false)
-    bwd_grid[1, 1] = Label(fig, "Bwd TOF threshold:", font = :bold, tellwidth = false)
-    sl_bwd = Slider(bwd_grid[1, 2], range = LinRange(0.0, 1.0, 500), value = bwd_thresh, snap = false)
-    bwd_grid[1, 3] = Label(fig, @lift(string(round($bwd_thresh * 100; digits=1)) * "%"), tellwidth = false)
-
-    # Quantity selector (row 1 of ctrl_grid)
+    # Row 1: Quantity + Colormap menus
+    fig[1, 1:4] = ctrl_grid = GridLayout(tellwidth = false)
     ctrl_grid[1, 1] = Label(fig, "Quantity:", font = :bold, tellwidth = false)
-    menu_qty = Menu(ctrl_grid[1, 2], options = all_quantities, default = all_quantities[1])
+    menu_qty  = Menu(ctrl_grid[1, 2], options = all_quantities,
+                     default = all_quantities[1])
+    ctrl_grid[1, 3] = Label(fig, "Colormap:", font = :bold, tellwidth = false)
+    available_cmaps = ["viridis", "turbo", "jet", "hot", "cool", "plasma",
+                       "inferno", "RdBu", "seismic", "bwr", "gnuplot2"]
+    menu_cmap = Menu(ctrl_grid[1, 4], options = available_cmaps,
+                     default = "viridis")
 
-    # 3-D axis (row 5)
-    ax = Axis3(fig[5, 1:3],
-        title  = @lift("Step $($step_obs)/$nsteps – $($qty_obs)"),
-        aspect = (1.0, 1.0, 1/3),
+    # Row 2: Step slider
+    fig[2, 1:4] = step_grid = GridLayout(tellwidth = false)
+    step_grid[1, 1] = Label(fig, "Step:", font = :bold, tellwidth = false)
+    sl_step    = Slider(step_grid[1, 2:3], range = 1:nsteps,
+                        startvalue = step_init)
+    step_index = sl_step.value   # Observable{Int} – no extra binding needed
+    step_grid[1, 4] = Label(fig,
+        @lift(begin
+            yr = result.time[$step_index] / _SECONDS_PER_YEAR
+            "$($step_index)/$nsteps  (t = $(round(yr; digits=3)) yr)"
+        end),
+        tellwidth = false
+    )
+
+    # Row 3: TOF interval slider (years) – replaces two broken single sliders
+    fwd_max_yr  = _finite_max(diag_init.forward_tof)  / _SECONDS_PER_YEAR
+    bwd_max_yr  = _finite_max(diag_init.backward_tof) / _SECONDS_PER_YEAR
+    tof_hi_init = max(fwd_max_yr, bwd_max_yr, 1.0)
+    tof_range   = LinRange(0.0, tof_hi_init, 500)
+
+    fig[3, 1:4] = tof_grid = GridLayout(tellwidth = false)
+    tof_grid[1, 1] = Label(fig, "TOF range (yr):", font = :bold,
+                            tellwidth = false)
+    sl_tof = IntervalSlider(tof_grid[1, 2:3], range = tof_range)
+    tof_grid[1, 4] = Label(fig,
+        @lift(begin
+            lo, hi = $(sl_tof.interval)
+            "[$(round(lo; digits=2)), $(round(hi; digits=2))] yr"
+        end),
+        tellwidth = false
+    )
+
+    # Row 4: 3-D axis
+    ax = Axis3(fig[4, 1:4],
+        title     = @lift("Step $($step_index)/$nsteps  |  $($qty_obs)"),
+        aspect    = (1.0, 1.0, 1/3),
         zreversed = z_is_depth
     )
 
-    # Colorbar (row 6)
-    # Placeholder – will be rebuilt when the plot updates
-
     # ---- Observable for cell colours ---------------------------------------
     cell_colors = @lift begin
-        diag  = $diag_obs
-        qty   = $qty_obs
-        raw   = _extract_quantity(diag, qty, inj_keys, prod_keys)
+        diag = $diag_obs
+        dyn  = $dyn_obs
+        qty  = $qty_obs
+        tof_interval = $(sl_tof.interval)
+        tof_lo_s = tof_interval[1] * _SECONDS_PER_YEAR
+        tof_hi_s = tof_interval[2] * _SECONDS_PER_YEAR
 
-        # Apply TOF thresholds: cells above either threshold → NaN (hidden)
+        raw = _fd_extract_quantity(diag, dyn, static_qty, qty,
+                                   inj_keys, prod_keys)
+
         fwd_tof = diag.forward_tof
         bwd_tof = diag.backward_tof
-
-        fwd_max = _finite_max(fwd_tof)
-        bwd_max = _finite_max(bwd_tof)
-
-        fwd_cut = $fwd_thresh * fwd_max
-        bwd_cut = $bwd_thresh * bwd_max
-
         out = copy(raw)
         for i in eachindex(out)
-            if !isfinite(fwd_tof[i]) || fwd_tof[i] > fwd_cut
+            ft = fwd_tof[i]
+            bt = bwd_tof[i]
+            if !isfinite(ft) || ft < tof_lo_s || ft > tof_hi_s
                 out[i] = NaN
-            elseif !isfinite(bwd_tof[i]) || bwd_tof[i] > bwd_cut
+            elseif !isfinite(bt)
                 out[i] = NaN
             end
         end
@@ -189,46 +216,43 @@ function _launch_inspector(result, model, forces;
             (0.0, 1.0)
         else
             lo, hi = extrema(vals)
-            lo ≈ hi ? (lo, lo + 1e-12) : (lo, hi)
+            lo ≈ hi ? (lo, lo + 1.0) : (lo, hi)
         end
     end
+
+    # Lifted colormap (Symbol → RGBA vector so it can be swapped reactively)
+    colormap_vec = @lift(Makie.to_colormap($cmap_obs))
 
     # ---- Mesh plot ---------------------------------------------------------
     scat = mesh!(ax, pts_c, tri_c;
-        color      = vertex_colors,
-        colorrange = crange,
-        colormap   = colormap,
-        backlight  = 1,
-        nan_color  = :transparent,
+        color        = vertex_colors,
+        colorrange   = crange,
+        colormap     = colormap_vec,
+        backlight    = 1,
+        nan_color    = :transparent,
         transparency = false
     )
 
-    Colorbar(fig[6, 1:3], scat, vertical = false, label = qty_obs)
+    # Row 5: Colorbar
+    Colorbar(fig[5, 1:4], scat, vertical = false, label = qty_obs)
+
+    # ---- Well markers ------------------------------------------------------
+    _fd_plot_wells!(ax, cell_centroids, setup_init)
 
     # ---- Reactive updates --------------------------------------------------
 
-    # Step slider → recompute diagnostics
-    on(sl_step.selected_index) do idx
-        step_obs[] = idx
-        diag_obs[] = _compute_diag(result, model, forces, idx)
+    # Step slider → recompute diagnostics and dynamic quantities.
+    # Uses sl_step.value (= step_index) directly; NO write-back to the slider
+    # observable, so there is no circular dependency.
+    on(step_index) do idx
+        setup    = _fd_build_setup(result, model, forces, idx)
+        diag_obs[] = solve_flow_diagnostics(setup; compute_tracers = true)
+        dyn_obs[]  = _fd_dynamic_quantities(
+            _fd_reservoir_state(result.states[idx]), nc)
     end
 
-    # Forward TOF threshold slider
-    on(sl_fwd.value) do v
-        fwd_thresh[] = v
-    end
-
-    # Backward TOF threshold slider
-    on(sl_bwd.value) do v
-        bwd_thresh[] = v
-    end
-
-    # Quantity menu
-    on(menu_qty.selection) do s
-        if !isnothing(s)
-            qty_obs[] = s
-        end
-    end
+    on(menu_qty.selection)  do s; isnothing(s) || (qty_obs[]  = s); end
+    on(menu_cmap.selection) do s; isnothing(s) || (cmap_obs[] = Symbol(s)); end
 
     # ---- Display -----------------------------------------------------------
     if new_window
@@ -240,48 +264,117 @@ function _launch_inspector(result, model, forces;
 end
 
 # -------------------------------------------------------------------------
-# Helper: compute diagnostics for one step
+# Helper: build FlowDiagnosticsSetup for a given step index
 # -------------------------------------------------------------------------
 
-function _compute_diag(result, model, forces, step_index)
-    # If forces are per-step, pick the matching entry
+function _fd_build_setup(result, model, forces, step_index)
     f = forces
     if f isa AbstractVector
         f = f[min(step_index, lastindex(f))]
     end
-    setup = setup_flow_diagnostics(result, model, f; step_index = step_index)
-    return solve_flow_diagnostics(setup; compute_tracers = true)
+    return setup_flow_diagnostics(result, model, f; step_index = step_index)
+end
+
+# -------------------------------------------------------------------------
+# Helper: extract the reservoir sub-state from a (possibly multi-model) state
+# -------------------------------------------------------------------------
+
+function _fd_reservoir_state(state)
+    if isa(state, AbstractDict) && haskey(state, :Reservoir)
+        return state[:Reservoir]
+    end
+    return state
+end
+
+# -------------------------------------------------------------------------
+# Helper: static cell-level quantities from the domain
+# -------------------------------------------------------------------------
+
+function _fd_static_quantities(domain, nc)
+    d = Dict{String, Vector{Float64}}()
+    for key in (:Permeability, :Porosity, :FluidVolume, :volumes)
+        try
+            val = domain[key]
+            if val isa AbstractVector && length(val) == nc
+                d[string(key)] = Float64.(val)
+            elseif val isa AbstractMatrix && size(val, 2) == nc
+                for i in 1:size(val, 1)
+                    d["$(key)[$i]"] = Float64.(val[i, :])
+                end
+            end
+        catch
+        end
+    end
+    return d
+end
+
+# -------------------------------------------------------------------------
+# Helper: dynamic cell-level quantities from a reservoir state snapshot
+# -------------------------------------------------------------------------
+
+function _fd_dynamic_quantities(res_state, nc)
+    d = Dict{String, Vector{Float64}}()
+    for k in keys(res_state)
+        try
+            val = res_state[k]
+            if val isa AbstractVector && length(val) == nc &&
+                    eltype(val) <: Real
+                d[string(k)] = Float64.(val)
+            elseif val isa AbstractMatrix && size(val, 2) == nc &&
+                    eltype(val) <: Real
+                for i in 1:size(val, 1)
+                    d["$(k)[$i]"] = Float64.(val[i, :])
+                end
+            end
+        catch
+        end
+    end
+    return d
 end
 
 # -------------------------------------------------------------------------
 # Helper: extract the requested quantity as a Float64 vector (length = nc)
+#
+# TOF/residence-time values are returned in *years*. Non-finite (unreachable)
+# cells are mapped to NaN so that they render as transparent.
 # -------------------------------------------------------------------------
 
-function _extract_quantity(
+function _fd_extract_quantity(
         diag::FlowDiagnosticsResult,
+        dyn_quantities::Dict{String,Vector{Float64}},
+        static_quantities::Dict{String,Vector{Float64}},
         qty::String,
         inj_keys::Vector{Symbol},
         prod_keys::Vector{Symbol}
     )
     nc = length(diag.forward_tof)
-    if qty == "Forward TOF"
-        return float.(diag.forward_tof)
-    elseif qty == "Backward TOF"
-        return float.(diag.backward_tof)
-    elseif qty == "Residence time"
-        return float.(diag.residence_time)
+
+    if qty == "Forward TOF (years)"
+        return map(x -> isfinite(x) ? x / _SECONDS_PER_YEAR : NaN,
+                   diag.forward_tof)
+    elseif qty == "Backward TOF (years)"
+        return map(x -> isfinite(x) ? x / _SECONDS_PER_YEAR : NaN,
+                   diag.backward_tof)
+    elseif qty == "Residence time (years)"
+        return map(x -> isfinite(x) ? x / _SECONDS_PER_YEAR : NaN,
+                   diag.residence_time)
     elseif startswith(qty, "Inj tracer: ")
         k = Symbol(qty[length("Inj tracer: ")+1:end])
-        return float.(get(diag.injector_tracers, k, zeros(nc)))
+        return Float64.(get(diag.injector_tracers, k, zeros(nc)))
     elseif startswith(qty, "Prod tracer: ")
         k = Symbol(qty[length("Prod tracer: ")+1:end])
-        return float.(get(diag.producer_tracers, k, zeros(nc)))
+        return Float64.(get(diag.producer_tracers, k, zeros(nc)))
+    elseif haskey(dyn_quantities, qty)
+        return Float64.(dyn_quantities[qty])
+    elseif startswith(qty, "Static: ")
+        k = qty[length("Static: ")+1:end]
+        return Float64.(get(static_quantities, k, zeros(nc)))
     end
     return zeros(nc)
 end
 
 # -------------------------------------------------------------------------
-# Helper: finite maximum (returns 1.0 if all Inf)
+# Helper: finite maximum (returns 1.0 if all values are non-finite)
 # -------------------------------------------------------------------------
 
 function _finite_max(v::AbstractVector)
@@ -290,4 +383,32 @@ function _finite_max(v::AbstractVector)
         isfinite(x) && (m = max(m, x))
     end
     return isfinite(m) ? m : 1.0
+end
+
+# -------------------------------------------------------------------------
+# Helper: plot well locations as scatter markers
+# -------------------------------------------------------------------------
+
+function _fd_plot_wells!(ax, cell_centroids, setup::FlowDiagnosticsSetup)
+    D = size(cell_centroids, 1)
+    function _pt(c)
+        x = Float32(cell_centroids[1, c])
+        y = D >= 2 ? Float32(cell_centroids[2, c]) : 0f0
+        z = D >= 3 ? Float32(cell_centroids[3, c]) : 0f0
+        return (x, y, z)
+    end
+    for (_, cells) in setup.injector_cells
+        isempty(cells) && continue
+        xs = [_pt(c)[1] for c in cells]
+        ys = [_pt(c)[2] for c in cells]
+        zs = [_pt(c)[3] for c in cells]
+        scatter!(ax, xs, ys, zs; color = :red,  markersize = 20, overdraw = true)
+    end
+    for (_, cells) in setup.producer_cells
+        isempty(cells) && continue
+        xs = [_pt(c)[1] for c in cells]
+        ys = [_pt(c)[2] for c in cells]
+        zs = [_pt(c)[3] for c in cells]
+        scatter!(ax, xs, ys, zs; color = :blue, markersize = 20, overdraw = true)
+    end
 end

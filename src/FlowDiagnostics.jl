@@ -53,11 +53,14 @@ module FlowDiagnostics
 
     The GUI provides:
     - A **step slider** to select the simulation step. Flow diagnostics are
-      recomputed for the chosen step.
-    - A **quantity menu** to display forward TOF, backward TOF, residence time,
-      or a tracer concentration.
-    - **TOF threshold sliders** to hide cells with forward or backward TOF above
-      the chosen cut-off.
+      recomputed for the chosen step. Simulation time is shown in years.
+    - A **quantity menu** to display forward/backward TOF (years), residence
+      time (years), tracer concentrations, dynamic state variables (Pressure,
+      Saturations, …), or static domain properties (Permeability, Porosity, …).
+    - A **colormap menu** to choose among common Makie colormaps.
+    - A **TOF range** `IntervalSlider` (in years) to threshold the displayed
+      cells by forward TOF. Cells with non-finite TOF are always hidden.
+    - **Well markers** – injectors shown in red, producers in blue.
     """
     function flow_diagnostics_inspector end
 

@@ -222,7 +222,7 @@ tuple, returning `nothing` if no reservoir forces are found.
 """
 function _get_reservoir_forces(forces)
     isnothing(forces) && return nothing
-    if forces isa NamedTuple
+    if forces isa NamedTuple || forces isa AbstractDict
         if haskey(forces, :Reservoir)
             return forces[:Reservoir]
         elseif haskey(forces, :sources) || haskey(forces, :bc)
