@@ -51,7 +51,8 @@ Results from a flow diagnostics computation.
   travel time from the cell to the nearest producer along streamlines.
 - `residence_time`: Total residence time (s) per cell, equal to the sum of
   forward and backward TOF. Cells not reachable from any injector and producer
-  simultaneously have `Inf` residence time.
+  simultaneously have residence time equal to `2 * max_tof` (or `Inf` when
+  `max_tof = Inf`).
 - `injector_tracers`: Dict mapping each injector name to a vector of
   steady-state tracer concentrations (0–1) in every cell. A value of 1
   means the cell is entirely swept by that injector.

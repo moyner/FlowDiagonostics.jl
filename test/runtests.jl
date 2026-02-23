@@ -141,5 +141,43 @@ _mean(x) = sum(x) / length(x)
         @test diag isa FlowDiagnosticsResult
     end
 
+    @testset "max_tof for disconnected cells" begin
+        # Construct a minimal FlowDiagnosticsSetup directly: 3 cells, one face
+        # connecting cell 1 (injector) to cell 2 (producer).  Cell 3 has no
+        # face connections and is therefore disconnected from both wells.
+        #
+        # Expected behaviour:
+        #   - Cell 3 gets Inf TOF when max_tof = Inf (default _solve_tof)
+        #   - Cell 3 gets max_tof when a finite max_tof is supplied
+        N3   = [1 ; 2][:, :]              # 2 × 1 face matrix
+        q3   = [1e-4]                      # positive flux: cell 1 → cell 2
+        pv3  = [10.0, 10.0, 10.0]         # pore volumes
+        inj3  = Dict{Symbol, Vector{Int}}(:I => [1])
+        irat3 = Dict{Symbol, Float64}(:I => 1e-4)
+        pro3  = Dict{Symbol, Vector{Int}}(:P => [2])
+        prat3 = Dict{Symbol, Float64}(:P => 1e-4)
+
+        setup3 = FlowDiagnosticsSetup(nothing, N3, q3, pv3, inj3, irat3, pro3, prat3)
+
+        # Without max_tof: disconnected cell 3 should be Inf
+        diag_inf = solve_flow_diagnostics(setup3; compute_tracers = false, max_tof = Inf)
+        @test isinf(diag_inf.forward_tof[3])
+        @test isinf(diag_inf.backward_tof[3])
+
+        # With a finite max_tof: cell 3 should be capped
+        max_tof_val = 5_000 * 365.25 * 86400.0   # 5 000 years in seconds
+        diag_capped = solve_flow_diagnostics(setup3; compute_tracers = false, max_tof = max_tof_val)
+        @test diag_capped.forward_tof[3]  ≈ max_tof_val
+        @test diag_capped.backward_tof[3] ≈ max_tof_val
+        @test all(isfinite, diag_capped.forward_tof)
+        @test all(isfinite, diag_capped.backward_tof)
+        @test all(isfinite, diag_capped.residence_time)
+
+        # Default max_tof (10 000 years): connected cells and cell 3 all finite
+        diag_default = solve_flow_diagnostics(setup3; compute_tracers = false)
+        @test all(isfinite, diag_default.forward_tof)
+        @test all(isfinite, diag_default.backward_tof)
+    end
+
 end
 
