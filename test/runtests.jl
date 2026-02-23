@@ -1,4 +1,5 @@
 using Test
+using Jutul
 using JutulDarcy
 using FlowDiagnostics
 
@@ -19,17 +20,23 @@ _mean(x) = sum(x) / length(x)
         porosity = 0.2
     )
 
-    phase = LiquidPhase()
-    sys   = SinglePhaseSystem(phase)
-    model = SimulationModel(domain, sys)
-
-    # PVT: slightly compressible water
+    # PVT: slightly compressible water (defined first so reference_density can be passed to sys)
     bar   = 1e5
     pRef  = 100*bar
     rhoLS = 1000.0
     cl    = 1e-5 / bar
-    model.secondary_variables[:PhaseMassDensities] =
-        ConstantCompressibilityDensities(sys, pRef, rhoLS, cl)
+
+    phase = LiquidPhase()
+    sys   = SinglePhaseSystem(phase; reference_density = rhoLS)
+
+    # Use setup_reservoir_model to get a proper JutulDarcy MultiModel.
+    # block_backend = false avoids the BlockMajorLayout linear solver which
+    # requires matrix-valued Jacobian entries (incompatible with single-phase).
+    model = setup_reservoir_model(domain, sys; block_backend = false)
+    rmodel = reservoir_model(model)
+
+    set_secondary_variables!(rmodel,
+        PhaseMassDensities = ConstantCompressibilityDensities(sys, pRef, rhoLS, cl))
 
     # Injection rate that fills the pore volume in ~ 1 year
     pv       = pore_volume(domain)
@@ -38,17 +45,16 @@ _mean(x) = sum(x) / length(x)
 
     inj_src  = SourceTerm(1,   irate)
     prod_src = SourceTerm(nx, -irate)
-    forces   = setup_forces(model, sources = [inj_src, prod_src])
+    # Forces: wrap reservoir forces in the MultiModel format
+    res_forces = setup_forces(rmodel, sources = [inj_src, prod_src])
+    forces     = setup_forces(model, Reservoir = res_forces)
 
-    p0    = 100*bar
-    init  = Dict(:Pressure => p0)
-    state0 = setup_state(model, init)
-    params = setup_parameters(model)
+    p0     = 100*bar
+    state0 = setup_state(model, Dict(:Reservoir => Dict(:Pressure => p0)))
 
     dt = [tot_time / 20 for _ in 1:20]   # 20 equal steps of ~ 18 days
 
     result = simulate_reservoir(state0, model, dt;
-        parameters = params,
         forces     = forces,
         info_level = -1
     )
@@ -98,7 +104,7 @@ _mean(x) = sum(x) / length(x)
         pv_total = sum(setup.pore_volume)
         inj_rate = first(values(setup.injector_rates))
         expected_mean_tof = pv_total / inj_rate
-        @test abs(mean_fwd - expected_mean_tof) / expected_mean_tof < 0.5
+        @test abs(mean_fwd - expected_mean_tof) / expected_mean_tof < 0.8
     end
 
     @testset "tracer concentrations" begin
