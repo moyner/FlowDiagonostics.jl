@@ -1,5 +1,5 @@
 """
-    solve_flow_diagnostics(setup; compute_tracers = true)
+    solve_flow_diagnostics(setup; compute_tracers = true, max_tof = 10_000 * 365.25 * 86400.0)
 
 Compute forward/backward time-of-flight and, optionally, steady-state tracer
 concentrations from a pre-assembled `FlowDiagnosticsSetup`.
@@ -27,11 +27,15 @@ that are not fixed by a boundary condition (injectors / producers).
 # Keyword arguments
 - `compute_tracers::Bool = true`: whether to solve for tracer concentrations
   in addition to time-of-flight.
+- `max_tof::Float64`: upper bound (in seconds) assigned to cells that are
+  disconnected from all wells (i.e. have no flow path to any injector or
+  producer).  Defaults to 10 000 years.  Set to `Inf` to retain the previous
+  behaviour of returning infinite values for such cells.
 
 # Returns
 A `FlowDiagnosticsResult` with the computed diagnostics.
 """
-function solve_flow_diagnostics(setup::FlowDiagnosticsSetup; compute_tracers::Bool = true)
+function solve_flow_diagnostics(setup::FlowDiagnosticsSetup; compute_tracers::Bool = true, max_tof::Float64 = 10_000 * 365.25 * 86400.0)
     (; N, q, pore_volume, injector_cells, injector_rates,
        producer_cells, producer_rates) = setup
 
@@ -57,7 +61,7 @@ function solve_flow_diagnostics(setup::FlowDiagnosticsSetup; compute_tracers::Bo
     end
 
     fwd_A = _build_upwind_matrix(q, N, nc, fwd_src)
-    fwd_tof = _solve_tof(fwd_A, pore_volume, fwd_bc, nc)
+    fwd_tof = _solve_tof(fwd_A, pore_volume, fwd_bc, nc; max_tof = max_tof)
 
     # -----------------------------------------------------------------
     # Backward TOF: reverse flux, fixed cells = producers (τ = 0)
@@ -78,7 +82,7 @@ function solve_flow_diagnostics(setup::FlowDiagnosticsSetup; compute_tracers::Bo
     end
 
     bwd_A = _build_upwind_matrix(-q, N, nc, bwd_src)
-    bwd_tof = _solve_tof(bwd_A, pore_volume, bwd_bc, nc)
+    bwd_tof = _solve_tof(bwd_A, pore_volume, bwd_bc, nc; max_tof = max_tof)
 
     # Residence time
     res_time = fwd_tof .+ bwd_tof
@@ -178,11 +182,11 @@ end
 # -------------------------------------------------------------------------
 
 """
-    _solve_tof(A, pv, bc_cells, nc)
+    _solve_tof(A, pv, bc_cells, nc; max_tof = Inf)
 
 Solve the TOF linear system for interior cells.  BC cells (injectors or
 producers, depending on whether this is a forward or backward solve) are set
-to zero.  Cells that have no flux outflow are unreachable and receive `Inf`.
+to zero.  Cells that have no flux outflow are unreachable and receive `max_tof`.
 
 The system solved for the solvable (non-BC) cells is:
 
@@ -195,9 +199,10 @@ function _solve_tof(
         A::SparseMatrixCSC,
         pv::AbstractVector,
         bc_cells::Dict{Int, Float64},
-        nc::Int
+        nc::Int;
+        max_tof::Float64 = Inf
     )
-    τ = fill(Inf, nc)
+    τ = fill(max_tof, nc)
 
     solvable = _find_solvable_cells(A, bc_cells, nc)
     isempty(solvable) && return τ

@@ -205,10 +205,10 @@ function _collect_sources!(
 
             if ctrl isa InjectorControl
                 inj_cells[wname]  = reservoir_cells
-                inj_rates[wname]  = max(0.0, -perf_div)  # injection = net inflow
+                inj_rates[wname]  = max(0.0, perf_div)   # injection = net outflow to reservoir
             elseif ctrl isa ProducerControl
                 prod_cells[wname] = reservoir_cells
-                prod_rates[wname] = max(0.0, perf_div)   # production = net outflow
+                prod_rates[wname] = max(0.0, -perf_div)  # production = net inflow from reservoir
             end
         end
     end
