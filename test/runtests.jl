@@ -141,13 +141,48 @@ _mean(x) = sum(x) / length(x)
         @test diag isa FlowDiagnosticsResult
     end
 
+    @testset "case workflow and pressure velocity" begin
+        case = JutulCase(model, dt, forces; state0 = state0)
+        diagnostics = flow_diagnostics_all_states(case, result;
+            compute_tracers = false)
+        @test length(diagnostics) == length(result.states)
+        @test diagnostics[end].forward_tof ≈ solve_flow_diagnostics(
+            setup_flow_diagnostics(result, case); compute_tracers = false).forward_tof
+
+        pressure = solve_pressure_flow_diagnostics(case; dt = dt[1],
+            compute_tracers = false)
+        @test length(pressure.setup.q) == number_of_faces(domain)
+        @test all(isfinite, pressure.setup.q)
+        @test pressure.diagnostics isa FlowDiagnosticsResult
+
+        two_system = ImmiscibleSystem((AqueousPhase(), LiquidPhase());
+            reference_densities = (1000.0, 800.0))
+        two_model = setup_reservoir_model(domain, two_system;
+            block_backend = false)
+        two_reservoir = reservoir_model(two_model)
+        two_forces = setup_forces(two_model;
+            Reservoir = setup_forces(two_reservoir;
+                sources = [
+                    SourceTerm(1, irate; fractional_flow = [1.0, 0.0]),
+                    SourceTerm(nx, -irate; fractional_flow = [1.0, 0.0])
+                ]))
+        two_state = setup_state(two_model, Dict(:Reservoir => Dict(
+            :Pressure => p0, :Saturations => fill(0.5, 2, nx))))
+        two_case = JutulCase(two_model, [dt[1]], two_forces;
+            state0 = two_state)
+        two_pressure = solve_pressure_flow_diagnostics(two_case;
+            compute_tracers = false)
+        @test length(two_pressure.setup.q) == number_of_faces(domain)
+        @test all(isfinite, two_pressure.setup.q)
+    end
+
     @testset "max_tof for disconnected cells" begin
         # Construct a minimal FlowDiagnosticsSetup directly: 3 cells, one face
         # connecting cell 1 (injector) to cell 2 (producer).  Cell 3 has no
         # face connections and is therefore disconnected from both wells.
         #
         # Expected behaviour:
-        #   - Cell 3 gets Inf TOF when max_tof = Inf (default _solve_tof)
+        #   - Cell 3 gets Inf TOF when max_tof = Inf
         #   - Cell 3 gets max_tof when a finite max_tof is supplied
         N3   = [1 ; 2][:, :]              # 2 × 1 face matrix
         q3   = [1e-4]                      # positive flux: cell 1 → cell 2
@@ -181,3 +216,55 @@ _mean(x) = sum(x) / length(x)
 
 end
 
+@testset "Prepared and reordered solves" begin
+    # 1 -> 2 -> 3 -> 1 is a cycle. Cell 1 has an injector boundary;
+    # cell 3 connects to a producer at cell 4.
+    neighbors = [1 2 3 3; 2 3 1 4]
+    flux = [1.0, 1.0, 0.25, 0.75]
+    wells = Dict(:I => [1, 2], :P => [4])
+    directions = Dict(:I => :injector, :P => :producer)
+    setup = FlowDiagnosticsSetup(nothing, neighbors, flux, ones(4),
+        wells, directions, Dict{Symbol, Pair{Int, Float64}}())
+    direct = solve_flow_diagnostics(prepare_flow_diagnostics(setup);
+        perforation_tracers = :I)
+    ordered = solve_flow_diagnostics(prepare_flow_diagnostics(setup;
+        solver = :reordered); perforation_tracers = :I)
+    @test direct.forward_tof ≈ ordered.forward_tof
+    @test direct.backward_tof ≈ ordered.backward_tof
+    @test direct.injector_tracers[:I] ≈ ordered.injector_tracers[:I]
+    @test haskey(direct.injector_tracers, :I_perf_1)
+    @test haskey(direct.injector_tracers, :I_perf_2)
+    @test direct.injector_tracers[:I_perf_1][1] == 1.0
+    @test direct.injector_tracers[:I_perf_1][2] == 0.0
+    @test direct.injector_tracers[:I_perf_2][2] == 1.0
+
+    switched_forces = (
+        Facility = (control = Dict(
+            :I => ProducerControl(TotalRateTarget(-1.0)),
+            :P => InjectorControl(TotalRateTarget(1.0), [1.0])
+        ),),
+    )
+    switched = prepare_flow_diagnostics(setup; forces = switched_forces)
+    @test haskey(switched.producer_cells, :I)
+    @test haskey(switched.injector_cells, :P)
+    @test !haskey(switched.injector_cells, :I)
+
+    cycle_neighbors = [1 2 3 4 4; 2 3 4 2 5]
+    cycle_flux = [0.75, 1.0, 1.0, 0.25, 0.75]
+    cycle_setup = FlowDiagnosticsSetup(nothing, cycle_neighbors, cycle_flux,
+        ones(5), Dict(:I => [1], :P => [5]), directions,
+        Dict{Symbol, Pair{Int, Float64}}())
+    cycle_direct = solve_flow_diagnostics(cycle_setup)
+    cycle_ordered = solve_flow_diagnostics(cycle_setup; solver = :reordered)
+    @test cycle_direct.forward_tof ≈ cycle_ordered.forward_tof
+    @test cycle_direct.backward_tof ≈ cycle_ordered.backward_tof
+    @test cycle_direct.injector_tracers[:I] ≈ cycle_ordered.injector_tracers[:I]
+
+    closed_setup = FlowDiagnosticsSetup(nothing, [1 2 3; 2 3 1],
+        ones(3), ones(3), Dict{Symbol, Vector{Int}}(),
+        Dict{Symbol, Symbol}(), Dict{Symbol, Pair{Int, Float64}}())
+    closed = solve_flow_diagnostics(closed_setup; solver = :reordered,
+        compute_tracers = false, max_tof = Inf)
+    @test all(isinf, closed.forward_tof)
+    @test all(isinf, closed.backward_tof)
+end

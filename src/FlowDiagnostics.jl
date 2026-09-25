@@ -6,13 +6,11 @@ Computes forward and backward time-of-flight (TOF) as well as steady-state
 tracer concentrations from a `ReservoirSimResult` using finite-volume
 discretization with an upwind scheme.
 
-The workflow is split into two phases:
-1. **Setup** (`setup_flow_diagnostics`): extract a single state, dt and forces
-   from the simulation result, compute inter-cell fluxes with JutulDarcy
-   routines, and assemble the upwind connectivity structure. The resulting
-   `FlowDiagnosticsSetup` can be reused for multiple solve calls.
-2. **Solve** (`solve_flow_diagnostics`): build and solve the sparse linear
-   systems for forward/backward TOF and for tracer concentrations.
+`setup_flow_diagnostics` extracts a velocity field from a reported state.
+`prepare_flow_diagnostics` assembles and factorizes the directional systems
+once for repeated solves. `solve_flow_diagnostics` computes TOF and tracers.
+`solve_pressure_flow_diagnostics` obtains a velocity field from a pressure
+step when no simulation result is available.
 """
 module FlowDiagnostics
     using JutulDarcy
@@ -40,9 +38,12 @@ module FlowDiagnostics
     include("FlowDiagnostics/types.jl")
     include("FlowDiagnostics/setup.jl")
     include("FlowDiagnostics/solve.jl")
+    include("FlowDiagnostics/reordered.jl")
+    include("FlowDiagnostics/pressure.jl")
 
-    export FlowDiagnosticsSetup, FlowDiagnosticsResult
-    export setup_flow_diagnostics, solve_flow_diagnostics
+    export FlowDiagnosticsSetup, FlowDiagnosticsResult, PreparedFlowDiagnostics
+    export setup_flow_diagnostics, prepare_flow_diagnostics, solve_flow_diagnostics
+    export flow_diagnostics_all_states, solve_pressure_flow_diagnostics
 
     """
         flow_diagnostics_inspector(result, model, forces; kwarg...)

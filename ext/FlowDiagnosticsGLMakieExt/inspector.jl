@@ -5,7 +5,7 @@
 #   flow_diagnostics_inspector(result, case::JutulCase; kwarg...)
 
 # Seconds in one Julian year (365.25 days)
-const _SECONDS_PER_YEAR = 365.25 * 86400.0
+const SECONDS_PER_YEAR = 365.25 * 86400.0
 
 # -------------------------------------------------------------------------
 # Public entry points
@@ -54,7 +54,7 @@ function FlowDiagnostics.flow_diagnostics_inspector(
         new_window::Bool = get(ENV, "CI", "false") == "false",
         max_tof::Float64 = 20.0
     )
-    _launch_inspector(result, model, forces;
+    launch_inspector(result, model, forces;
         resolution  = resolution,
         z_is_depth  = z_is_depth,
         new_window  = new_window,
@@ -76,7 +76,7 @@ end
 # Internal implementation
 # -------------------------------------------------------------------------
 
-function _launch_inspector(result, model, forces;
+function launch_inspector(result, model, forces;
         resolution, z_is_depth, new_window, max_tof = 20.0)
 
     # ---- Mesh and geometry ------------------------------------------------
@@ -101,13 +101,13 @@ function _launch_inspector(result, model, forces;
 
     # ---- Initial diagnostics (last step) ----------------------------------
     step_init  = nsteps
-    setup_init = _fd_build_setup(result, model, forces, step_init)
+    setup_init = fd_build_setup(result, model, forces, step_init)
     diag_init  = solve_flow_diagnostics(setup_init; compute_tracers = true)
 
     # ---- Static and initial dynamic quantities ----------------------------
-    static_qty = _fd_static_quantities(domain, nc)
-    dyn_init   = _fd_dynamic_quantities(
-        _fd_reservoir_state(result.states[step_init]), nc)
+    static_qty = fd_static_quantities(domain, nc)
+    dyn_init   = fd_dynamic_quantities(
+        fd_reservoir_state(result.states[step_init]), nc)
 
     # ---- Build quantity list ----------------------------------------------
     inj_keys  = sort(collect(keys(diag_init.injector_tracers)),  by = string)
@@ -150,15 +150,15 @@ function _launch_inspector(result, model, forces;
     step_index = sl_step.value   # Observable{Int} – no extra binding needed
     step_grid[1, 4] = Label(fig,
         @lift(begin
-            yr = result.time[$step_index] / _SECONDS_PER_YEAR
+            yr = result.time[$step_index] / SECONDS_PER_YEAR
             "$($step_index)/$nsteps  (t = $(round(yr; digits=3)) yr)"
         end),
         tellwidth = false
     )
 
     # Row 3: TOF interval slider (years) – replaces two broken single sliders
-    fwd_max_yr  = _finite_max(diag_init.forward_tof)  / _SECONDS_PER_YEAR
-    bwd_max_yr  = _finite_max(diag_init.backward_tof) / _SECONDS_PER_YEAR
+    fwd_max_yr  = finite_max(diag_init.forward_tof)  / SECONDS_PER_YEAR
+    bwd_max_yr  = finite_max(diag_init.backward_tof) / SECONDS_PER_YEAR
     tof_hi_init = min(max(fwd_max_yr, bwd_max_yr, 1.0), max_tof)
     tof_range   = LinRange(0.0, tof_hi_init, 500)
 
@@ -187,10 +187,10 @@ function _launch_inspector(result, model, forces;
         dyn  = $dyn_obs
         qty  = $qty_obs
         tof_interval = $(sl_tof.interval)
-        tof_lo_s = tof_interval[1] * _SECONDS_PER_YEAR
-        tof_hi_s = tof_interval[2] * _SECONDS_PER_YEAR
+        tof_lo_s = tof_interval[1] * SECONDS_PER_YEAR
+        tof_hi_s = tof_interval[2] * SECONDS_PER_YEAR
 
-        raw = _fd_extract_quantity(diag, dyn, static_qty, qty,
+        raw = fd_extract_quantity(diag, dyn, static_qty, qty,
                                    inj_keys, prod_keys)
 
         fwd_tof = diag.forward_tof
@@ -218,7 +218,11 @@ function _launch_inspector(result, model, forces;
             (0.0, 1.0)
         else
             lo, hi = extrema(vals)
-            lo ≈ hi ? (lo, lo + 1.0) : (lo, hi)
+            if lo ≈ hi
+                (lo, lo + 1.0)
+            else
+                (lo, hi)
+            end
         end
     end
 
@@ -239,7 +243,7 @@ function _launch_inspector(result, model, forces;
     Colorbar(fig[5, 1:4], scat, vertical = false, label = qty_obs)
 
     # ---- Well markers ------------------------------------------------------
-    _fd_plot_wells!(ax, cell_centroids, setup_init)
+    fd_plot_wells!(ax, cell_centroids, setup_init)
 
     # ---- Reactive updates --------------------------------------------------
 
@@ -247,14 +251,22 @@ function _launch_inspector(result, model, forces;
     # Uses sl_step.value (= step_index) directly; NO write-back to the slider
     # observable, so there is no circular dependency.
     on(step_index) do idx
-        setup    = _fd_build_setup(result, model, forces, idx)
+        setup    = fd_build_setup(result, model, forces, idx)
         diag_obs[] = solve_flow_diagnostics(setup; compute_tracers = true)
-        dyn_obs[]  = _fd_dynamic_quantities(
-            _fd_reservoir_state(result.states[idx]), nc)
+        dyn_obs[]  = fd_dynamic_quantities(
+            fd_reservoir_state(result.states[idx]), nc)
     end
 
-    on(menu_qty.selection)  do s; isnothing(s) || (qty_obs[]  = s); end
-    on(menu_cmap.selection) do s; isnothing(s) || (cmap_obs[] = Symbol(s)); end
+    on(menu_qty.selection) do selection
+        if !isnothing(selection)
+            qty_obs[] = selection
+        end
+    end
+    on(menu_cmap.selection) do selection
+        if !isnothing(selection)
+            cmap_obs[] = Symbol(selection)
+        end
+    end
 
     # ---- Display -----------------------------------------------------------
     if new_window
@@ -269,7 +281,7 @@ end
 # Helper: build FlowDiagnosticsSetup for a given step index
 # -------------------------------------------------------------------------
 
-function _fd_build_setup(result, model, forces, step_index)
+function fd_build_setup(result, model, forces, step_index)
     f = forces
     if f isa AbstractVector
         f = f[min(step_index, lastindex(f))]
@@ -281,7 +293,7 @@ end
 # Helper: extract the reservoir sub-state from a (possibly multi-model) state
 # -------------------------------------------------------------------------
 
-function _fd_reservoir_state(state)
+function fd_reservoir_state(state)
     if isa(state, AbstractDict) && haskey(state, :Reservoir)
         return state[:Reservoir]
     end
@@ -292,7 +304,7 @@ end
 # Helper: static cell-level quantities from the domain
 # -------------------------------------------------------------------------
 
-function _fd_static_quantities(domain, nc)
+function fd_static_quantities(domain, nc)
     d = Dict{String, Vector{Float64}}()
     for key in (:Permeability, :Porosity, :FluidVolume, :volumes)
         try
@@ -314,7 +326,7 @@ end
 # Helper: dynamic cell-level quantities from a reservoir state snapshot
 # -------------------------------------------------------------------------
 
-function _fd_dynamic_quantities(res_state, nc)
+function fd_dynamic_quantities(res_state, nc)
     d = Dict{String, Vector{Float64}}()
     for k in keys(res_state)
         try
@@ -341,7 +353,7 @@ end
 # cells are mapped to NaN so that they render as transparent.
 # -------------------------------------------------------------------------
 
-function _fd_extract_quantity(
+function fd_extract_quantity(
         diag::FlowDiagnosticsResult,
         dyn_quantities::Dict{String,Vector{Float64}},
         static_quantities::Dict{String,Vector{Float64}},
@@ -352,13 +364,13 @@ function _fd_extract_quantity(
     nc = length(diag.forward_tof)
 
     if qty == "Forward TOF (years)"
-        return map(x -> isfinite(x) ? x / _SECONDS_PER_YEAR : NaN,
+        return map(x -> ifelse(isfinite(x), x / SECONDS_PER_YEAR, NaN),
                    diag.forward_tof)
     elseif qty == "Backward TOF (years)"
-        return map(x -> isfinite(x) ? x / _SECONDS_PER_YEAR : NaN,
+        return map(x -> ifelse(isfinite(x), x / SECONDS_PER_YEAR, NaN),
                    diag.backward_tof)
     elseif qty == "Residence time (years)"
-        return map(x -> isfinite(x) ? x / _SECONDS_PER_YEAR : NaN,
+        return map(x -> ifelse(isfinite(x), x / SECONDS_PER_YEAR, NaN),
                    diag.residence_time)
     elseif startswith(qty, "Inj tracer: ")
         k = Symbol(qty[length("Inj tracer: ")+1:end])
@@ -379,38 +391,46 @@ end
 # Helper: finite maximum (returns 1.0 if all values are non-finite)
 # -------------------------------------------------------------------------
 
-function _finite_max(v::AbstractVector)
+function finite_max(v::AbstractVector)
     m = -Inf
     for x in v
         isfinite(x) && (m = max(m, x))
     end
-    return isfinite(m) ? m : 1.0
+    return ifelse(isfinite(m), m, 1.0)
 end
 
 # -------------------------------------------------------------------------
 # Helper: plot well locations as scatter markers
 # -------------------------------------------------------------------------
 
-function _fd_plot_wells!(ax, cell_centroids, setup::FlowDiagnosticsSetup)
+function fd_plot_wells!(ax, cell_centroids, setup::FlowDiagnosticsSetup)
     D = size(cell_centroids, 1)
-    function _pt(c)
+    function point_for_cell(c)
         x = Float32(cell_centroids[1, c])
-        y = D >= 2 ? Float32(cell_centroids[2, c]) : 0f0
-        z = D >= 3 ? Float32(cell_centroids[3, c]) : 0f0
+        y = 0f0
+        z = 0f0
+        if D >= 2
+            y = Float32(cell_centroids[2, c])
+        end
+        if D >= 3
+            z = Float32(cell_centroids[3, c])
+        end
         return (x, y, z)
     end
     for (_, cells) in setup.injector_cells
         isempty(cells) && continue
-        xs = [_pt(c)[1] for c in cells]
-        ys = [_pt(c)[2] for c in cells]
-        zs = [_pt(c)[3] for c in cells]
+        points = map(point_for_cell, cells)
+        xs = first.(points)
+        ys = getindex.(points, 2)
+        zs = last.(points)
         scatter!(ax, xs, ys, zs; color = :red,  markersize = 20, overdraw = true)
     end
     for (_, cells) in setup.producer_cells
         isempty(cells) && continue
-        xs = [_pt(c)[1] for c in cells]
-        ys = [_pt(c)[2] for c in cells]
-        zs = [_pt(c)[3] for c in cells]
+        points = map(point_for_cell, cells)
+        xs = first.(points)
+        ys = getindex.(points, 2)
+        zs = last.(points)
         scatter!(ax, xs, ys, zs; color = :blue, markersize = 20, overdraw = true)
     end
 end
