@@ -45,25 +45,4 @@ module FlowDiagnostics
     export setup_flow_diagnostics, prepare_flow_diagnostics, solve_flow_diagnostics
     export flow_diagnostics_all_states, solve_pressure_flow_diagnostics
 
-    """
-        flow_diagnostics_inspector(result, model, forces; kwarg...)
-        flow_diagnostics_inspector(result, case::JutulCase; kwarg...)
-
-    Launch an interactive 3-D GLMakie inspector for flow diagnostics. Requires
-    GLMakie to be loaded (`using GLMakie`) before calling this function.
-
-    The GUI provides:
-    - A **step slider** to select the simulation step. Flow diagnostics are
-      recomputed for the chosen step. Simulation time is shown in years.
-    - A **quantity menu** to display forward/backward TOF (years), residence
-      time (years), tracer concentrations, dynamic state variables (Pressure,
-      Saturations, …), or static domain properties (Permeability, Porosity, …).
-    - A **colormap menu** to choose among common Makie colormaps.
-    - A **TOF range** `IntervalSlider` (in years) to threshold the displayed
-      cells by forward TOF. Cells with non-finite TOF are always hidden.
-    - **Well markers** – injectors shown in red, producers in blue.
-    """
-    function flow_diagnostics_inspector end
-
-    export flow_diagnostics_inspector
 end

@@ -231,41 +231,53 @@ solve_reduced(direction::PreparedDirection, rhs) = direction.factorization \ rhs
 
 """
     solve_flow_diagnostics(setup_or_prepared; compute_tracers=true,
+        compute_well_tof=false,
         perforation_tracers=nothing, max_tof=DEFAULT_MAX_TOF,
         solver=:direct, forces=nothing)
 
-Compute TOF and one tracer per active well. Set `perforation_tracers` to a
-well name, a vector of well names, or `:all` to add a separate tracer for every
-perforation of those wells. Perforation keys are `:W_perf_1`, `:W_perf_2`, etc.
+Compute TOF and one tracer per active well. With `compute_well_tof=true`, also
+compute conditional forward TOF for each injector and backward TOF for each
+producer. These are keyed by well name in `forward_tof_by_well` and
+`backward_tof_by_well`. Cells not reached by a well receive `max_tof`.
+Set `perforation_tracers` to a well name, a vector of well names, or `:all`
+to add a separate tracer for every perforation of those wells. Perforation
+keys are `:W_perf_1`, `:W_perf_2`, etc.
 """
 function solve_flow_diagnostics(setup::FlowDiagnosticsSetup;
-        compute_tracers::Bool = true, perforation_tracers = nothing,
+        compute_tracers::Bool = true, compute_well_tof::Bool = false,
+        perforation_tracers = nothing,
         max_tof::Real = DEFAULT_MAX_TOF, solver::Symbol = :direct, forces = nothing)
     prepared = prepare_flow_diagnostics(setup; forces = forces, solver = solver)
-    return solve_flow_diagnostics(prepared; compute_tracers, perforation_tracers, max_tof)
+    return solve_flow_diagnostics(prepared;
+        compute_tracers, compute_well_tof, perforation_tracers, max_tof)
 end
 
 function solve_flow_diagnostics(prepared::PreparedFlowDiagnostics;
-        compute_tracers::Bool = true, perforation_tracers = nothing,
+        compute_tracers::Bool = true, compute_well_tof::Bool = false,
+        perforation_tracers = nothing,
         max_tof::Real = DEFAULT_MAX_TOF)
     validate_perforation_selection(perforation_tracers, prepared.setup.well_cells)
     pv = prepared.setup.pore_volume
-    nc = length(pv)
     forward = solve_direction(prepared.forward, pv, nothing, Float64(max_tof))
     backward = solve_direction(prepared.backward, pv, nothing, Float64(max_tof))
-    residence = forward .+ backward
+    forward_by_well = Dict{Symbol, Vector{Float64}}()
+    backward_by_well = Dict{Symbol, Vector{Float64}}()
     injector_tracers = Dict{Symbol, Vector{Float64}}()
     producer_tracers = Dict{Symbol, Vector{Float64}}()
-    if compute_tracers
-        compute_direction_tracers!(injector_tracers, prepared.forward,
+    if compute_tracers || compute_well_tof
+        compute_direction_diagnostics!(injector_tracers, forward_by_well,
+            prepared.forward, pv,
             prepared.injector_cells, prepared.setup.well_cells,
-            perforation_tracers, nc)
-        compute_direction_tracers!(producer_tracers, prepared.backward,
+            perforation_tracers, compute_tracers, compute_well_tof,
+            Float64(max_tof))
+        compute_direction_diagnostics!(producer_tracers, backward_by_well,
+            prepared.backward, pv,
             prepared.producer_cells, prepared.setup.well_cells,
-            perforation_tracers, nc)
+            perforation_tracers, compute_tracers, compute_well_tof,
+            Float64(max_tof))
     end
-    return FlowDiagnosticsResult(forward, backward, residence,
-        injector_tracers, producer_tracers)
+    return FlowDiagnosticsResult(forward, backward, forward_by_well,
+        backward_by_well, injector_tracers, producer_tracers)
 end
 
 function validate_perforation_selection(option, wells)
@@ -297,7 +309,9 @@ function wants_perforation_tracers(option, name)
     throw(ArgumentError("perforation_tracers must be a well name, collection, :all, or nothing"))
 end
 
-function compute_direction_tracers!(tracers, direction, cells, wells, option, nc)
+function compute_direction_diagnostics!(tracers, well_tof, direction, pv,
+        cells, wells, option, compute_tracers, compute_well_tof, max_tof)
+    nc = length(pv)
     rhs = zeros(nc)
     boundary = zeros(nc)
     for (name, perforations) in cells
@@ -305,8 +319,21 @@ function compute_direction_tracers!(tracers, direction, cells, wells, option, nc
         for cell in perforations
             boundary[cell] = 1.0
         end
-        tracers[name] = solve_direction(direction, rhs, boundary, 0.0; tracer = true)
-        if haskey(wells, name) && wants_perforation_tracers(option, name)
+        concentration = solve_direction(direction, rhs, boundary, 0.0; tracer = true)
+        if compute_tracers
+            tracers[name] = concentration
+        end
+        if compute_well_tof
+            moment = solve_direction(direction, pv .* concentration, nothing, 0.0)
+            times = fill(max_tof, nc)
+            for cell in eachindex(times)
+                if concentration[cell] > 0
+                    times[cell] = moment[cell] / concentration[cell]
+                end
+            end
+            well_tof[name] = times
+        end
+        if compute_tracers && haskey(wells, name) && wants_perforation_tracers(option, name)
             for (index, cell) in enumerate(perforations)
                 fill!(boundary, 0.0)
                 boundary[cell] = 1.0

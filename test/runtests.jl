@@ -85,7 +85,9 @@ _mean(x) = sum(x) / length(x)
         nc = number_of_cells(domain)
         @test length(diag.forward_tof)   == nc
         @test length(diag.backward_tof)  == nc
-        @test length(diag.residence_time) == nc
+        @test !hasproperty(diag, :residence_time)
+        @test isempty(diag.forward_tof_by_well)
+        @test isempty(diag.backward_tof_by_well)
 
         # Forward TOF: injector cell = 0, increases towards producer
         @test diag.forward_tof[1] ≈ 0.0 atol=1e-10
@@ -94,9 +96,6 @@ _mean(x) = sum(x) / length(x)
         # Backward TOF: producer cell = 0, increases towards injector
         @test diag.backward_tof[end] ≈ 0.0 atol=1e-10
         @test diag.backward_tof[1] > diag.backward_tof[end]
-
-        # Residence time should be the sum
-        @test diag.residence_time ≈ diag.forward_tof .+ diag.backward_tof
 
         # Total pore volume = integral of flux × TOF (Lorenz coefficient check)
         # For a perfectly uniform 1-D system, mean TOF ≈ pore_volume / injection_rate
@@ -144,16 +143,19 @@ _mean(x) = sum(x) / length(x)
     @testset "case workflow and pressure velocity" begin
         case = JutulCase(model, dt, forces; state0 = state0)
         diagnostics = flow_diagnostics_all_states(case, result;
-            compute_tracers = false)
+            compute_tracers = false, compute_well_tof = true)
         @test length(diagnostics) == length(result.states)
+        @test length(diagnostics[end].forward_tof_by_well) == 1
+        @test length(diagnostics[end].backward_tof_by_well) == 1
         @test diagnostics[end].forward_tof ≈ solve_flow_diagnostics(
             setup_flow_diagnostics(result, case); compute_tracers = false).forward_tof
 
         pressure = solve_pressure_flow_diagnostics(case; dt = dt[1],
-            compute_tracers = false)
+            compute_tracers = false, compute_well_tof = true)
         @test length(pressure.setup.q) == number_of_faces(domain)
         @test all(isfinite, pressure.setup.q)
         @test pressure.diagnostics isa FlowDiagnosticsResult
+        @test length(pressure.diagnostics.forward_tof_by_well) == 1
 
         two_system = ImmiscibleSystem((AqueousPhase(), LiquidPhase());
             reference_densities = (1000.0, 800.0))
@@ -206,14 +208,43 @@ _mean(x) = sum(x) / length(x)
         @test diag_capped.backward_tof[3] ≈ max_tof_val
         @test all(isfinite, diag_capped.forward_tof)
         @test all(isfinite, diag_capped.backward_tof)
-        @test all(isfinite, diag_capped.residence_time)
 
-        # Default max_tof (10 000 years): connected cells and cell 3 all finite
+        # Default max_tof: connected cells and cell 3 all finite
         diag_default = solve_flow_diagnostics(setup3; compute_tracers = false)
         @test all(isfinite, diag_default.forward_tof)
         @test all(isfinite, diag_default.backward_tof)
     end
 
+end
+
+@testset "Per-well time of flight" begin
+    # Two injectors meet at cell 4 after different path lengths; flow then
+    # splits between two producers. Conditional TOFs distinguish the paths.
+    neighbors = [1 3 2 4 4; 3 4 4 5 6]
+    flux = [1.0, 1.0, 1.0, 1.0, 1.0]
+    wells = Dict(:I1 => [1], :I2 => [2], :P1 => [5], :P2 => [6])
+    directions = Dict(:I1 => :injector, :I2 => :injector,
+        :P1 => :producer, :P2 => :producer)
+    setup = FlowDiagnosticsSetup(nothing, neighbors, flux,
+        [1.0, 1.0, 1.0, 2.0, 1.0, 1.0], wells, directions,
+        Dict{Symbol, Pair{Int, Float64}}())
+    result = solve_flow_diagnostics(setup; compute_tracers = false,
+        compute_well_tof = true, max_tof = Inf)
+    @test isempty(result.injector_tracers)
+    @test isempty(result.producer_tracers)
+    @test Set(keys(result.forward_tof_by_well)) == Set((:I1, :I2))
+    @test Set(keys(result.backward_tof_by_well)) == Set((:P1, :P2))
+    @test result.forward_tof_by_well[:I1][4] ≈ 2.0
+    @test result.forward_tof_by_well[:I2][4] ≈ 1.0
+    @test result.backward_tof_by_well[:P1][4] ≈ 1.0
+    @test result.backward_tof_by_well[:P2][4] ≈ 1.0
+    @test isinf(result.forward_tof_by_well[:I1][2])
+    @test isinf(result.backward_tof_by_well[:P1][6])
+
+    ordered = solve_flow_diagnostics(setup; solver = :reordered,
+        compute_well_tof = true, max_tof = 100.0)
+    @test ordered.forward_tof_by_well[:I1][4] ≈ 2.0
+    @test ordered.backward_tof_by_well[:P1][6] == 100.0
 end
 
 @testset "Prepared and reordered solves" begin

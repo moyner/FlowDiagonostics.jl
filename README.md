@@ -10,7 +10,8 @@ using FlowDiagnostics
 setup = setup_flow_diagnostics(result, case; step_index = 1)
 prepared = prepare_flow_diagnostics(setup)
 diagnostics = solve_flow_diagnostics(prepared;
-    perforation_tracers = :INJ1)
+    perforation_tracers = :INJ1, compute_well_tof = true)
+residence_time = diagnostics.forward_tof .+ diagnostics.backward_tof
 
 # One result per reported state, using that step's forces:
 series = flow_diagnostics_all_states(case, result)
@@ -31,6 +32,12 @@ prepared context.
 Individual perforation tracers use keys such as `:INJ1_perf_1` in the
 corresponding injector or producer tracer dictionary. The well tracer remains
 available under the well name.
+
+Set `compute_well_tof=true` to get conditional forward TOF from each active
+injector in `forward_tof_by_well` and backward TOF to each active producer in
+`backward_tof_by_well`. The dictionaries are empty by default. Unreached cells
+use `max_tof`; `compute_well_tof` works when `compute_tracers=false`.
+Residence time can be computed from the two total TOF vectors as shown above.
 
 The default solver uses sparse direct factorization. Pass `solver=:reordered`
 to `prepare_flow_diagnostics` or `solve_flow_diagnostics` to use the optional

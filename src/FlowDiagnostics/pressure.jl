@@ -6,13 +6,14 @@ and the case parameters are reused when evaluating face fluxes. Returns a vector
 of `FlowDiagnosticsResult` in the same order as `result.states`.
 """
 function flow_diagnostics_all_states(case::JutulCase, result::ReservoirSimResult;
-        compute_tracers::Bool = true, perforation_tracers = nothing,
+        compute_tracers::Bool = true, compute_well_tof::Bool = false,
+        perforation_tracers = nothing,
         max_tof::Real = DEFAULT_MAX_TOF, solver::Symbol = :direct)
     diagnostics = Vector{FlowDiagnosticsResult}(undef, length(result.states))
     for step in eachindex(result.states)
         setup = setup_flow_diagnostics(result, case; step_index = step)
         diagnostics[step] = solve_flow_diagnostics(setup;
-            compute_tracers, perforation_tracers, max_tof, solver)
+            compute_tracers, compute_well_tof, perforation_tracers, max_tof, solver)
     end
     return diagnostics
 end
@@ -93,7 +94,8 @@ velocity field is `setup.q` in m³/s, oriented by `setup.N`.
 """
 function solve_pressure_flow_diagnostics(case::JutulCase;
         step_index::Int = 1, dt::Real = case.dt[step_index],
-        compute_tracers::Bool = true, perforation_tracers = nothing,
+        compute_tracers::Bool = true, compute_well_tof::Bool = false,
+        perforation_tracers = nothing,
         max_tof::Real = DEFAULT_MAX_TOF, solver::Symbol = :direct,
         info_level::Int = -1)
     model = immiscible_pressure_model(case.model)
@@ -127,6 +129,6 @@ function solve_pressure_flow_diagnostics(case::JutulCase;
     setup = FlowDiagnosticsSetup(pressure_model, neighbors, flux,
         pore_volume(reservoir_domain(reservoir)), wells, directions, sources)
     diagnostics = solve_flow_diagnostics(setup;
-        compute_tracers, perforation_tracers, max_tof, solver)
+        compute_tracers, compute_well_tof, perforation_tracers, max_tof, solver)
     return (setup = setup, diagnostics = diagnostics, pressure_state = pressure_state)
 end

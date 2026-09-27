@@ -9,20 +9,12 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Jutul = "2b460a1a-8a2b-45b2-b125-b5c536396eb9"
 
-[weakdeps]
-GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
-
-[extensions]
-FlowDiagnosticsGLMakieExt = "GLMakie"
-
 [compat]
-GLMakie = "0.8, 0.9, 0.10, 0.11, 0.12, 0.13"
 Jutul = "0.4,0.5"
 JutulDarcy = "0.3,0.4"
 julia = "1.9"
 
 [extras]
-GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
 Test = "8dfed614-e22c-358e-ad98-444b0e08bb74"
 
 [targets]

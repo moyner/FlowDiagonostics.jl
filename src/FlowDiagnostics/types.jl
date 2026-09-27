@@ -69,11 +69,12 @@ function Base.show(io::IO, setup::FlowDiagnosticsSetup)
     print(io, "FlowDiagnosticsSetup ($(length(setup.pore_volume)) cells, $(length(setup.q)) faces, $(length(setup.well_cells)) wells)")
 end
 
-"""Forward/backward time of flight and well tracer concentrations."""
+"""Forward/backward time of flight, optional per-well TOF, and well tracers."""
 struct FlowDiagnosticsResult
     forward_tof::Vector{Float64}
     backward_tof::Vector{Float64}
-    residence_time::Vector{Float64}
+    forward_tof_by_well::Dict{Symbol, Vector{Float64}}
+    backward_tof_by_well::Dict{Symbol, Vector{Float64}}
     injector_tracers::Dict{Symbol, Vector{Float64}}
     producer_tracers::Dict{Symbol, Vector{Float64}}
 end
