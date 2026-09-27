@@ -1,4 +1,4 @@
-const DEFAULT_MAX_TOF = 10_000 * 365.25 * 86400.0
+const DEFAULT_MAX_TOF = 100 * 365.25 * 86400.0
 
 struct PreparedDirection{F}
     matrix::SparseMatrixCSC{Float64, Int}
